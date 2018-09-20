@@ -7,34 +7,30 @@ from sklearn.cluster import KMeans,Birch,DBSCAN,AgglomerativeClustering
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import pairwise
 import time
+from os import listdir
+import math
 
 def to_ec_standards(record):
-    fixed = ['ENV-AQN','FLNRO-WMB','EC-raw']
-    if record[1]['network_name'] == 'ENV-AQN':
-        temp_var = 'temp_mean'
-    if record[1]['network_name'] == 'EC-raw':
-        temp_var = 'temp_mean'
-    if record[1]['network_name'] == 'FLNRO-WMB':
-        temp_var = 'temperature'
+    fixed = ['ENV-AQN','FLNRO-WMB','EC_raw']
     if record[1]['network_name'] in fixed:
-        data = record[0]
-        for col in data.columns:
-            #print(record[0])
-            #print(type(col) == type('a'))
-            if 'temp' not in col:
-                data = data.drop(columns=[col])
-        dfmax = data.resample('D').max()
-        dfmin = data.resample('D').min()
-        #oldp = pd.DataFrame(data=record[0].loc[:,'precip_total'],index=record[0].loc[:,'obs_time'])
-        #dfp = oldp.resample('D').sum()
-        df = pd.merge(dfmax,dfmin,on='obs_time')
+        tdata = record[0].copy()
+        for col in tdata.columns:
+            if 'temp' not in col or 'air_temperature_y' in col:
+                tdata = tdata.drop(columns=[col])
+        dfmaxt = tdata.resample('D').max()
+        dfmint = tdata.resample('D').min()
+        pdata = record[0].copy()
+        for col in pdata.columns:
+            if 'precip' not in col:
+                pdata = pdata.drop(columns=[col])
+        dfp = tdata.resample('D').sum()
+        df = pd.concat([dfmaxt,dfmint],axis=1)
+        df = pd.concat([df,dfp],axis=1)
         #df = pd.merge(df,dfp,on='obs_time')
         try:
-            df.columns = ['max_temp','min_temp']
+            df.columns = ['max_temp','min_temp','one_day_precipitation']
         except ValueError:
-            print(record[1])
-            print(df.dtypes)
-        #df.columns = ['max_temp','min_temp','one-day_precipitation']
+            pass
         return (df,record[1])
     else:
         return record
@@ -112,7 +108,7 @@ def load_by_coords(lat,long,elev,rad):
     print('{} records loaded, {} were empty, {} missing'.format(length,ndcounter,nrcounter))
     return out
 
-def plot_on_map(records,labels):
+def plot_on_map(records,labels=None):
     xcoords = []
     ycoords = []
     nets = []
@@ -122,6 +118,8 @@ def plot_on_map(records,labels):
         nets.append(x[1]['network_name'])
 
     plt.scatter(xcoords,ycoords,c=labels)
+    #for i,x in enumerate(records):
+    #        plt.annotate(x[1]['station_name'],(xcoords[i],ycoords[i]))
     plt.legend(labels)
     plt.show()
 
@@ -156,6 +154,7 @@ def plot_records(records,variables, ti, tf):
     plt.show()
 
 def calculate_dist_matrix(records,variable):
+    '''
     last = pd.Timestamp(1800,1,1)
     first = pd.Timestamp(2050,1,1)
     for x in records:
@@ -170,11 +169,15 @@ def calculate_dist_matrix(records,variable):
         obs_array[(x[0].index[0]-first).days:(x[0].index[0]-first).days + x[0].shape[0],i] = x[0].loc[:,variable].values
     for i in range(obs_array.shape[1]):
         if obs_array[:,i][obs_array[:,i]!=None].any():
-            obs_array[:,i][obs_array[:,i]==None] = np.nanmean(obs_array[:,i][obs_array[:,i]!=None])
-    print(obs_array)
+            try:
+                obs_array[:,i][obs_array[:,i]==None] = np.nanmean(obs_array[:,i][obs_array[:,i]!=None])
+            except AttributeError:
+                print(obs_array[:,i][obs_array[:,i]!=None])
+                print((obs_array[:,i][obs_array[:,i]!=None])[0].dtype)
+    #print(obs_array)
     dist_mat = pairwise.pairwise_distances(obs_array)
-
     '''
+
     dist_mat = np.full((len(records),len(records)),None)
     #print(dist_mat)
     for i,rec_i in enumerate(records):
@@ -216,56 +219,95 @@ def calculate_dist_matrix(records,variable):
     full = dist_mat[~(dist_mat==None)]
     avg = np.mean(full)
     dist_mat[dist_mat==None] = avg
-    '''
+
     return dist_mat
 
-#source = load_by_coords(49.382662, -121.473297,40,100000)
-#source = load_by_name('hope')+load_by_name('vancouver')+load_by_name('kamloops')+load_by_name('george')
-source = load_by_name('hope')
-for i,x in enumerate(source):
-    source[i] = to_ec_standards(x)
-    #print(x[1]['network_name'])
+def yearly_average(record,variable):
+    year = pd.date_range(start='1/1/2018',periods=365,freq='D')
+    df = pd.DataFrame(data=np.full((365,1),0.0),index=year,columns=[variable])
+
+    for day in year:
+        date_data = []
+        for obs in record[0].index:
+            if day.day == obs.day and day.month == obs.month:
+                if record[0].at[obs,variable] != None and not np.isnan(record[0].at[obs,variable]):
+                    date_data.append(record[0].at[obs,variable])
+        if len(date_data) > 0:
+            df.at[day,variable] = sum(date_data) / len(date_data)
+    for column in range(df.shape[1]):
+        for i in range(365):
+            if abs(df.iat[i,column]) < 0.01:
+                df.iat[i,column] = df.iat[i-1,column]
+
+    return df
+
+
+#source = load_by_coords(49.382662, -121.473297,40,40000)
+source = load_by_name('hope')+load_by_name('vancouver')+load_by_name('kamloops')+load_by_name('george')
+#source = load_by_coords(49.42805,-123.56484,543,30000) #Huge list for Van area
+#source = load_by_name('hope')
+variable = 'max_temp'
 safe_source = []
 for x in source:
-    if x[1]['network_name'] in ('EC','BCH','ENV-AQN','FLNRO-WMB'):
-        safe_source.append(x)
-dist_matrix = calculate_dist_matrix(safe_source,'max_temp')
-'''
-for element in dist_matrix.flatten():
-    if element != None:
-        if np.isnan(element):
-            print('!!!!!!!!!')
-'''
-
-#print(dist_matrix)
-
-agg = AgglomerativeClustering(n_clusters=10,affinity='precomputed',linkage='complete')
-labels = agg.fit_predict(dist_matrix)
-plot_on_map(safe_source,labels)
-print(labels)
-
+    cleaned = to_ec_standards(x)
+    #if not (cleaned[1]['network_name']== 'FLNRO-WMB' and cleaned[1]['resolution'] == 'daily'):
+    if cleaned[1]['network_name'] in ('EC','BCH','ENV-AQN','FLNRO-WMB','EC_raw') and cleaned[0].loc[:,variable].any():
+        safe_source.append(cleaned)
+        #print(cleaned[1]['network_name'])
+        #    print(x[1])
+print(len(safe_source))
 variables = ['max_temp']
-ti = pd.Timestamp(1970,8,1)
-tf = pd.Timestamp(2018,8,1)
-#plot_records(source,variables,ti,tf)
+ti = pd.Timestamp(1850,8,1)
+tf = pd.Timestamp(2018,9,1)
+#plot_records(source,['current_air_temperature1','air_temperature'],ti,tf)
+
+#plot_records(safe_source,variables,ti,tf)
+#dist_matrix = calculate_dist_matrix(safe_source,'max_temp')
+
+#for x in safe_source:
+#    plot_records([x],variables,ti,tf)
+
 '''
+print('Calculating yearly normals')
+X = np.full((len(safe_source),1095),None)
+for i, src in enumerate(safe_source):
+    try:
+        X[i][:365] = yearly_average(src,variable).T.values
+        X[i][-730:-365] = yearly_average(src,'min_temp').T.values
+        X[i][-365:] = yearly_average(src,'one_day_precipitation').T.values
+    except KeyError:
+        print(src[1])
+'''
+X = np.empty((len(safe_source),365*3))
+
+for i,rec in enumerate(safe_source):
+    X[i] = np.loadtxt('yearly_normals/' + rec[1]['network_name'] + '/' + rec[1]['native_id'] + '.txt',delimiter=',')
+    #print(X[i,-365],X[i,-364])
+    for j,cell in enumerate(X[i]):
+        if cell == None or np.isnan(cell):
+            X[i,j] = 0
+
+#X = np.loadtxt('yearly_normals/hope_max_min_imp.txt',delimiter=',')
+#X = np.loadtxt('yearly_normals/pg_van_hope_kam_max_min.txt',delimiter=',')
+
+#print('Scaling data')
+#X = StandardScaler().fit_transform(X)
+print('Clustering stations')
+#agg = AgglomerativeClustering(n_clusters=20,affinity='euclidean',linkage='ward')
+#clusters = agg.fit(X)
+#clusters = DBSCAN(eps=0.9,min_samples=2).fit(X)
+clusters = KMeans(n_clusters=10).fit(X[:,:-365])
+labels = clusters.labels_
+print(labels)
+print(len(labels))
+plot_on_map(safe_source,labels=labels)
+
+
 for val in range(10):
-    sources = []
-    for ind,x in enumerate(labels):
-        if x == val:
-            sources.append(safe_source[ind])
-    plot_records(sources,variables,ti,tf)
-'''
-'''
-dbs = DBSCAN(min_samples=3,eps=0.2,metric='precomputed')
-clusters = dbs.fit(dist_matrix)
-plot_on_map(safe_source,clusters.labels_)
-print(clusters.labels_)
-'''
-
-
-
-
-'''
-
-'''
+    labs = []
+    for ind in range(X.shape[0]):
+        if labels[ind] == val:
+            plt.scatter(pd.date_range(start='1/1/2018',periods=365*2,freq='D'),X[ind,:-365])
+            labs.append((safe_source[ind][1]['network_name'],safe_source[ind][1]['station_name']))
+    plt.legend(labs)
+    plt.show()

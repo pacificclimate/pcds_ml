@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.cluster import KMeans,Birch,DBSCAN
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 import utm
 import scipy.spatial.distance as dist
@@ -186,79 +186,72 @@ def plot_records(records,variables, ti, tf,color='b'):
     plt.legend(labels)
     plt.show()
 
-def cluster_dbs(records,variable,ti,tf):
-    time_slice = records[0].loc[ti:tf]
-    data = time_slice.loc[:,variable].values
-    data[data==None] = np.nan
-    data = data.astype('float64')
-    ind = time_slice.index.values[~np.isnan(data)]
-    data = data[~np.isnan(data)]
-    data = np.array(list(zip(ind,data)))
-    try:
-        data = StandardScaler().fit_transform(data)
-    except ValueError:
-        return None
-    clusters = DBSCAN(eps=0.5).fit(data) #for fahrenheit issue
-    #clusters = DBSCAN(eps=0.7).fit(data) #for flatline
+def knnw(data,n_neighbors,std_mult):
 
-    return clusters
+    model = NearestNeighbors(n_neighbors=n_neighbors).fit(data)
+    graph = model.kneighbors_graph(data,mode='distance')
+    graph = graph.toarray()
 
-def cluster_kms(records,variable,ti,tf):
-    time_slice = records[0].loc[ti:tf]
-    data = time_slice.loc[:,variable].values
-    data[data==None] = np.nan
-    data = data.astype('float64')
-    ind = time_slice.index.values[~np.isnan(data)]
-    data = data[~np.isnan(data)]
-    data = np.array(list(zip(ind,data)))
+    totals = np.empty(graph.shape[0])
+    for i in range(graph.shape[0]):
+        total = np.sum(graph[i])
+        totals[i] = total
 
-    data = StandardScaler().fit_transform(data)
 
-    clusters = KMeans(n_clusters=4).fit(data)
-    return clusters
+    outliers = [1 if val > (np.mean(totals)+std_mult*np.std(totals)) else 0 for val in totals]
 
-def remove_outliers(record,clusters,variable,ti,tf):
-    time_slice = record[0].loc[ti:tf]
-    time_slice = time_slice.loc[~np.isnan(time_slice.loc[:,variable].values)]
-    for ix, obs_time in enumerate(time_slice.index):
-        if clusters.labels_[ix] == -1:
-            time_slice.at[obs_time,variable] = None
-    return [(time_slice,record[1])]
+    return outliers
 
+def knn(data,n_neighbors,std_mult):
+
+    model = NearestNeighbors(n_neighbors=n_neighbors).fit(data)
+    graph = model.kneighbors_graph(data,mode='distance')
+    graph = graph.toarray()
+
+    kn_dists = np.empty(graph.shape[0])
+    for i in range(graph.shape[0]):
+        sorted = np.sort(graph[i],axis=0)
+        kn_dists[i] = sorted[-(n_neighbors-1)]
+
+    outliers = [1 if val > (np.mean(kn_dists)+std_mult*np.std(kn_dists)) else 0 for val in kn_dists]
+
+    return outliers
 
 #sources = load_by_coords(49.42805,-123.56484,543,30000) #Huge list for Van area
+#sources = load_by_name('hope')
 #sources = [to_ec_standards(load_by_name('elphin')[0])]  #flatline
 #sources = [to_ec_standards(load_by_nid('env-aqn', 'E208096')[0])]  #fahrenheit
-#source = [to_ec_standards(load_by_name('othello')[0])] #wonky normal, bad example
+#sources = [to_ec_standards(load_by_name('othello')[0])] #wonky normal, bad example
 #sources = [to_ec_standards(load_by_name('zz good hope lake')[0])] #only has data in the summer, cuts out random winter points
 sources = [to_ec_standards(load_by_name_exact('hope')[0])] #One bad point
 #source = load_by_nid('ec','110FAG9')
-#source = [load_by_name('squamish')[6]]
+#sources = load_by_name('squamish')
+
 variable = 'min_temp'
-#variables = ['temperature','temp_mean']
 ti = pd.Timestamp(1980,8,1)
 tf = pd.Timestamp(2010,1,1)
-#plot_records(source,[variable],ti,tf)
-#plot_records(source,variables,ti,tf)
-#for i,x in enumerate(source):
-#    source[i] = to_ec_standards(x)
+
 safe_source = []
 for x in sources:
     if x[1]['network_name'] in ('EC','BCH','ENV-AQN','FLNRO-WMB') and variable in x[0].columns and x[0].loc[:,variable].any():
         safe_source.append(x)
+
 for source in safe_source:
-    clusters = cluster_kms(source,variable,ti,tf)
-    time_slice = source[0].loc[ti:tf]
-    data = time_slice.loc[:,variable].values
-    data[data==None] = np.nan
-    data = data.astype('float64')
-    ind = time_slice.index.values[~np.isnan(data)]
-    data = data[~np.isnan(data)]
-    data = pd.DataFrame(data=data,index=ind,columns=[variable])
-    if clusters == None:
-        labels = []
-    else:
-        labels = clusters.labels_
-    #cleaned = remove_outliers((data,source[1]),clusters,variable,ti,tf)
-    plot_records([(data,source[1])],[variable],ti,tf,color=labels)
-    #plot_records(cleaned,[variable],ti,tf,color=labels)
+    try:
+        time_slice = source[0].loc[ti:tf]
+        data = time_slice.loc[:,variable].values
+        data[data==None] = np.nan
+        data = data.astype('float64')
+        ind = time_slice.index.values[~np.isnan(data)]
+        data = data[~np.isnan(data)]
+        xaxis = np.arange(len(ind))*0.1
+        data = np.array(list(zip(xaxis,data)))
+
+        #outliers = knnw(data,20,2)
+        outliers = knn(data,20,9)
+
+
+        plt.scatter(ind,data[:,1],c=outliers)
+        plt.show()
+    except ValueError:
+        pass
